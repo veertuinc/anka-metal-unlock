@@ -147,23 +147,8 @@ valid but CPU token generation is very slow in the guest.
 
 ## Example results (PyTorch MPS)
 
-Same Apple M3 Pro host and macOS 26.4.1 Anka guest.
-`bin/pytorch_infer_bench.py` supports `mlp`, `gemm_fp16`, `gemm_bf16`, `conv`,
-and `attn`.
-
-```bash
-python3 bin/pytorch_infer_bench.py --device mps --workload mlp
-```
-
-Guest unlock with system Python needs the **arm64e** dylib:
-
-```bash
-DYLD_INSERT_LIBRARIES=/path/to/libAnkaGpuFamilyBoost-arm64e.dylib \
-VEERTU_ANKA_GPU_APPLE_FAMILY_MAX=1009 \
-python3 bin/pytorch_infer_bench.py --device mps --workload mlp
-```
-
-### One-shot five-scenario MLP (reference)
+Same Apple M3 Pro host and macOS 26.4.1 Anka guest. One-shot MLP forward
+(host PyTorch 2.13 / Python 3.11; guest PyTorch 2.8 / Python 3.9):
 
 | Scenario | Device | samples/s | mean ms/batch |
 | --- | --- | ---: | ---: |
@@ -173,34 +158,69 @@ python3 bin/pytorch_infer_bench.py --device mps --workload mlp
 | Anka guest MPS (default) | mps | 7194.56 | 8.90 |
 | Anka guest MPS (unlock) | mps | 8967.05 | 7.14 |
 
-Host: PyTorch 2.13.0 (Python 3.11). Guest: PyTorch 2.8.0 (Python 3.9).
+Repeated guest MPS default vs unlock (5 MLP runs): default mean 9423 samples/s,
+unlock 9481 (**+0.6%**). Other guest MPS workloads (mlp / gemm_fp16 / gemm_bf16 /
+conv / attn, 3 runs each) stayed within about ±3% — noise, not a clear unlock
+win. Use the **arm64e** dylib if you inject into CLT/system Python.
 
-### Guest MPS default vs unlock (repeated runs)
+**Takeaway:** PyTorch MPS is roughly neutral for this unlock on the tested
+paths. llama-bench (above) is the clear Metal-family win.
 
-Stock guest MPS already runs these PyTorch paths well. Across repeated guest
-runs, unlock stayed within a few percent of default (noise), unlike llama-bench.
+## Example results (OpenSubdiv Metal)
 
-MLP, 5 interleaved default/unlock runs:
+[OpenSubdiv](https://github.com/PixarAnimationStudios/OpenSubdiv) Metal
+`EvalStencils` on a Catmark cube (refine level 7 → 98,306 refined verts,
+8 warmups + 40 timed evals, **7 process runs**):
 
-| Mode | samples/s mean | stdev |
-| --- | ---: | ---: |
-| Anka guest MPS (default) | 9423 | 75 |
-| Anka guest MPS (unlock) | 9481 | 160 |
+| Scenario | supports family 1009 | evals/s mean | median | stdev |
+| --- | --- | ---: | ---: | ---: |
+| Host Metal | true | 3313.76 | 3386.88 | 155.59 |
+| Anka guest Metal (default) | false | 1765.86 | 1919.25 | 423.88 |
+| Anka guest Metal (unlock) | true | 1868.17 | 1871.40 | 216.94 |
 
-Unlock average: **+0.6%** vs default.
+Guest default had one slow outlier (816 evals/s). After dropping values below
+70% of the median, unlock was about **-2.9%** vs default (median **-2.5%**).
+All-runs mean showed unlock +5.8% only because of that outlier. Unlock still
+flips `supportsFamily(1009)` every run. Host Metal stays ~1.8× guest.
 
-Other workloads, 3 default + 3 unlock runs each (guest MPS):
+**Takeaway:** OpenSubdiv Metal runs either way; unlock changes the reported
+family without a clear throughput win on this path.
 
-| Workload | Default mean | Unlock mean | Delta |
-| --- | ---: | ---: | ---: |
-| mlp | 9616 samples/s | 9341 | -2.9% |
-| gemm_fp16 | 269132 rows/s | 265858 | -1.2% |
-| gemm_bf16 | 245476 rows/s | 249548 | +1.7% |
-| conv | 531 images/s | 530 | -0.2% |
-| attn | 333259 tokens/s | 338908 | +1.7% |
+## Testing summary: what works and what does not
 
-**Takeaway:** treat PyTorch MPS as roughly neutral for this unlock on the tested
-microbenchmarks. Use llama-bench (above) when you want a clear Metal-family win.
+Results below are from an Apple M3 Pro host and Anka macOS 15.5 / 26.4.1 guests.
+Your machine may differ. Always re-check with `./host/compare-vm-probe.sh` and
+your real workload.
+
+### Works
+
+| Area | What we saw |
+| --- | --- |
+| Capability probe | Stock guest reports Apple family support false and 32 KB threadgroup memory; with inject, family support becomes true and threadgroup memory rises to 64 KB (15.5 and 26.4.1). |
+| Host preference | `ForceUnrestrictedDeviceFeatureLevel` is required so the guest can use unrestricted feature levels after VM restart. |
+| llama.cpp / TinyLlama (Metal) | Large win. Guest unlock approached bare-metal Metal on a short `llama-bench` (pp64 ~1922 vs host ~1982 t/s; tg32 ~140 vs ~151). Stock guest Metal was slower than guest CPU. |
+| Process scope | Only the injected process (and children that inherit the env) change. Remove `DYLD_INSERT_LIBRARIES` / `VEERTU_ANKA_GPU_*` to go back to stock. |
+| arm64 vs arm64e | Use `libAnkaGpuFamilyBoost-arm64.dylib` for most apps; use the **arm64e** dylib for CLT/system Python and other arm64e binaries. |
+
+### Does not work well / no clear gain
+
+| Area | What we saw |
+| --- | --- |
+| PyTorch MPS (mlp, gemm, conv, attn) | Stock guest MPS already fast. Repeated runs: unlock within a few percent of default (noise). Not a reliable speedup path. |
+| OpenSubdiv Metal `EvalStencils` | Unlock flips `supportsFamily(1009)` to true, but cleaned/median throughput was flat to slightly worse (~−2.5% to −2.9%). Host still ~1.8× guest. |
+| `system_profiler SPDisplaysDataType` | Empty in the Anka guest with or without unlock. Unlock does not create a Displays GPU entry; it only changes Metal answers inside the injected process. |
+| Physical GPU passthrough | Not provided. Work stays on Apple’s paravirtual graphics path. |
+| Advertising `MTLGPUFamilyMetal3` | Avoid. Some stacks use that answer for residency paths the paravirtual device may not support. |
+| Hardened-runtime / non-injectable apps | Inject may be rejected; those processes stay stock. |
+| QEMU / nested VMs (expected) | Unlock does not change TCG/HVF/CPU emulation. Only a QEMU build that actually calls Metal *and* is injected could see different Metal answers; do not expect nested-VM speedups from this tool. |
+
+### Practical guidance
+
+1. Enable the host preference, restart the VM, confirm with `./host/compare-vm-probe.sh`.
+2. Prefer workloads that branch on Apple GPU family / threadgroup size (llama.cpp Metal was the clear case).
+3. Do not assume PyTorch MPS, OpenSubdiv stencil eval, or UI/system_profiler will get faster.
+4. Match dylib arch to the target process (`arm64` vs `arm64e`).
+5. Re-validate on each host chip, host macOS, guest macOS, and app build before production use.
 
 ## Limits
 
