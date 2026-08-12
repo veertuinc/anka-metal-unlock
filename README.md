@@ -20,9 +20,17 @@ This is not physical GPU passthrough. Work still goes through
 ## Requirements
 
 - Apple Silicon host with Anka
-- macOS guest (Tahoe-class guests used in testing)
 - Xcode Command Line Tools
 - Host preference `ForceUnrestrictedDeviceFeatureLevel` for the macOS user that starts VMs
+
+### Tested guest macOS versions
+
+| Guest macOS | Probe result |
+| --- | --- |
+| 15.5 (Sequoia) | Stock → boosted (`supports_family` false→true, threadgroup 32 KB → 64 KB) |
+| 26.4.1 (Tahoe) | Same as above |
+
+Newer guest macOS versions may work. Apple can change private Metal details in any release, so you must run `./host/compare-vm-probe.sh` on your guest before you rely on it. Untested versions are unsupported until you confirm them.
 
 ## Compile
 
