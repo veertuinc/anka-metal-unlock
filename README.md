@@ -128,22 +128,15 @@ llama-bench -m tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
   -p 64 -n 32 -r 1 -t 8 -o json
 ```
 
-### Bare metal (host)
+| Scenario | ngl | ggml Metal family | pp64 (t/s) | tg32 (t/s) |
+| --- | ---: | --- | ---: | ---: |
+| Host CPU | 0 | Apple9 (1009) | 209.57 | 67.05 |
+| Host Metal | -1 | Apple9 (1009) | 1981.53 | 151.02 |
+| Anka guest CPU | 0 | Apple5 (1005) | 13.33 | 0.22 |
+| Anka guest Metal (default) | -1 | Apple5 (1005) | 9.26 | 0.14 |
+| Anka guest Metal (unlock) | -1 | Apple9 (1009) | 1921.75 | 139.59 |
 
-| Mode | ggml Metal family | pp64 (t/s) | tg32 (t/s) |
-| --- | --- | ---: | ---: |
-| CPU (`-ngl 0`) | Apple9 (1009) | 209.57 | 67.05 |
-| Metal (`-ngl -1`) | Apple9 (1009) | 1981.53 | 151.02 |
-
-### Anka guest (macOS 26.4.1)
-
-| Mode | ggml Metal family | pp64 (t/s) | tg32 (t/s) |
-| --- | --- | ---: | ---: |
-| CPU (`-ngl 0`) | Apple5 (1005) | 13.33 | 0.22 |
-| Anka default Metal (`-ngl -1`) | Apple5 (1005) | 9.26 | 0.14 |
-| Metal unlock (`-ngl -1` + inject) | Apple9 (1009) | 1921.75 | 139.59 |
-
-Guest unlock lands close to bare-metal Metal on this short TinyLlama run (prompt
+Guest unlock lands close to host Metal on this short TinyLlama run (prompt
 ~1922 vs ~1982 t/s, gen ~140 vs ~151 t/s). Stock guest Metal stayed on Apple5
 with simdgroup reduction, simdgroup matrix multiply, and bfloat off. Unlock
 turned those on and reported Apple9.
