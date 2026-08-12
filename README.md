@@ -141,6 +141,10 @@ Guest unlock lands close to host Metal on this short TinyLlama run (prompt
 with simdgroup reduction, simdgroup matrix multiply, and bfloat off. Unlock
 turned those on and reported Apple9.
 
+A larger GGUF on the same guest (`Qwen2.5-1.5B-Instruct-Q4_K_M`, short
+`llama-bench` `-p 64 -n 32 -r 1`) matched the pattern: stock Apple5 pp64
+~6.6 / tg32 ~0.10 t/s; unlock Apple9 pp64 ~1356 / tg32 ~86 t/s.
+
 Numbers are from one short run on one host/guest pair. Re-run on your hardware
 before you treat them as a baseline. Longer runs (`-p 512 -n 128 -r 10`) are
 valid but CPU token generation is very slow in the guest.
@@ -186,6 +190,23 @@ flips `supportsFamily(1009)` every run. Host Metal stays ~1.8× guest.
 **Takeaway:** OpenSubdiv Metal runs either way; unlock changes the reported
 family without a clear throughput win on this path.
 
+## Example results (whisper.cpp / Ollama / MLX / sd.cpp / Candle)
+
+Same macOS 26.4.1 Anka guest (Apple M3 Pro host). Inject uses
+`libAnkaGpuFamilyBoost-arm64.dylib` unless noted.
+
+| Workload | Stock guest | Unlock | Verdict |
+| --- | --- | --- | --- |
+| whisper-cli (`ggml-tiny`, jfk.wav) | Apple5; total ~60 s | Apple9; total ~0.74–0.89 s | Large win |
+| whisper-bench `mul_mat` | up to ~296 GFLOPS (Q4_0 4096) | up to ~346 GFLOPS | Near-flat microbench |
+| Ollama (`ollama serve` + tiny model) | eval ~14–17 t/s | eval ~138–149 t/s | Large win (inject the **serve** process) |
+| MLX-LM SmolLM-135M-4bit (3 runs) | gen ~309–365 t/s | gen ~319–369 t/s | Neutral (use **arm64e** dylib for brew Python) |
+| stable-diffusion.cpp SD1.5 Q4_0 (256², 4 steps) | Apple5; abort / segfault | Apple9; image written (~7.5–17 s wall) | Unlock required for a successful run |
+| Candle Metal F16 matmul 2048² (3 runs) | ~4040–4231 GFLOPS | ~4477–4606 GFLOPS | Small gain (~+10%) |
+
+MLC LLM was not run: guest Python 3.14 had no `mlc-llm` wheel, and Homebrew
+`mlc` is an unrelated link checker.
+
 ## Testing summary: what works and what does not
 
 Results below are from an Apple M3 Pro host and Anka macOS 15.5 / 26.4.1 guests.
@@ -198,16 +219,23 @@ your real workload.
 | --- | --- |
 | Capability probe | Stock guest reports Apple family support false and 32 KB threadgroup memory; with inject, family support becomes true and threadgroup memory rises to 64 KB (15.5 and 26.4.1). |
 | Host preference | `ForceUnrestrictedDeviceFeatureLevel` is required so the guest can use unrestricted feature levels after VM restart. |
-| llama.cpp / TinyLlama (Metal) | Large win. Guest unlock approached bare-metal Metal on a short `llama-bench` (pp64 ~1922 vs host ~1982 t/s; tg32 ~140 vs ~151). Stock guest Metal was slower than guest CPU. |
+| llama.cpp Metal (TinyLlama + Qwen2.5-1.5B) | Large win. TinyLlama unlock approached host Metal on a short `llama-bench`. Qwen2.5-1.5B Q4_K_M: stock ~6.6/0.10 vs unlock ~1356/86 t/s (pp64/tg32). |
+| whisper.cpp (`whisper-cli`) | Large win on full transcription (~60 s → under 1 s for tiny + jfk.wav). Same ggml Metal family path as llama.cpp. |
+| Ollama | Large win when inject is on `ollama serve` (eval ~14–17 → ~138–149 t/s). Inject on `ollama run` alone is not enough. |
+| stable-diffusion.cpp | Stock Metal aborted / segfaulted on Apple5 for SD1.5 Q4_0; unlock (Apple9) completed and wrote PNGs. |
 | Process scope | Only the injected process (and children that inherit the env) change. Remove `DYLD_INSERT_LIBRARIES` / `VEERTU_ANKA_GPU_*` to go back to stock. |
-| arm64 vs arm64e | Use `libAnkaGpuFamilyBoost-arm64.dylib` for most apps; use the **arm64e** dylib for CLT/system Python and other arm64e binaries. |
+| arm64 vs arm64e | Use `libAnkaGpuFamilyBoost-arm64.dylib` for most apps; use the **arm64e** dylib for CLT/system Python, brew Python/MLX, and other arm64e binaries. |
 
 ### Does not work well / no clear gain
 
 | Area | What we saw |
 | --- | --- |
 | PyTorch MPS (mlp, gemm, conv, attn) | Stock guest MPS already fast. Repeated runs: unlock within a few percent of default (noise). Not a reliable speedup path. |
+| MLX-LM (SmolLM-135M-4bit) | Stock already fast (~300+ gen t/s). Unlock stayed in the same band. |
+| Candle Metal F16 matmul | Unlock about +10% GFLOPS on a 2048² microbench. Useful signal, not a llama-class jump. |
+| whisper-bench `mul_mat` | Family flips to Apple9; GFLOPS stayed close to stock. The win shows up in full `whisper-cli`, not this microbench. |
 | OpenSubdiv Metal `EvalStencils` | Unlock flips `supportsFamily(1009)` to true, but cleaned/median throughput was flat to slightly worse (~−2.5% to −2.9%). Host still ~1.8× guest. |
+| MLC LLM | Not measured here (no guest wheel / easy install path in the test VM). |
 | `system_profiler SPDisplaysDataType` | Empty in the Anka guest with or without unlock. Unlock does not create a Displays GPU entry; it only changes Metal answers inside the injected process. |
 | Physical GPU passthrough | Not provided. Work stays on Apple’s paravirtual graphics path. |
 | Advertising `MTLGPUFamilyMetal3` | Avoid. Some stacks use that answer for residency paths the paravirtual device may not support. |
@@ -217,10 +245,11 @@ your real workload.
 ### Practical guidance
 
 1. Enable the host preference, restart the VM, confirm with `./host/compare-vm-probe.sh`.
-2. Prefer workloads that branch on Apple GPU family / threadgroup size (llama.cpp Metal was the clear case).
-3. Do not assume PyTorch MPS, OpenSubdiv stencil eval, or UI/system_profiler will get faster.
+2. Prefer ggml / llama.cpp-class workloads (llama.cpp, whisper.cpp, Ollama, stable-diffusion.cpp).
+3. Do not assume PyTorch MPS, MLX-LM, OpenSubdiv stencil eval, or UI/system_profiler will get faster.
 4. Match dylib arch to the target process (`arm64` vs `arm64e`).
-5. Re-validate on each host chip, host macOS, guest macOS, and app build before production use.
+5. For Ollama, inject `ollama serve`, not only the client.
+6. Re-validate on each host chip, host macOS, guest macOS, and app build before production use.
 
 ## Limits
 
