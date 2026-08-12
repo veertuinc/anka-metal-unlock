@@ -152,6 +152,38 @@ Numbers are from one short run on one host/guest pair. Re-run on your hardware
 before you treat them as a baseline. Longer runs (`-p 512 -n 128 -r 10`) are
 valid but CPU token generation is very slow in the guest.
 
+## Example results (PyTorch MPS)
+
+Same Apple M3 Pro host and macOS 26.4.1 Anka guest. Workload:
+`bin/pytorch_infer_bench.py` — 8-layer MLP, batch 64, features 2048, hidden
+4096, 5 warmups + 20 timed reps.
+
+```bash
+python3 bin/pytorch_infer_bench.py --device cpu   # or mps
+```
+
+Guest unlock with system Python needs the **arm64e** dylib (CLT `python3` is
+arm64e-capable at inject time even when `file` reports arm64 slices):
+
+```bash
+DYLD_INSERT_LIBRARIES=/path/to/libAnkaGpuFamilyBoost-arm64e.dylib \
+VEERTU_ANKA_GPU_APPLE_FAMILY_MAX=1009 \
+python3 bin/pytorch_infer_bench.py --device mps
+```
+
+| Scenario | Device | samples/s | mean ms/batch |
+| --- | --- | ---: | ---: |
+| Host CPU | cpu | 1873.82 | 34.15 |
+| Host MPS | mps | 8857.47 | 7.23 |
+| Anka guest CPU | cpu | 1463.06 | 43.74 |
+| Anka guest MPS (default) | mps | 7194.56 | 8.90 |
+| Anka guest MPS (unlock) | mps | 8967.05 | 7.14 |
+
+Host used PyTorch 2.13.0 (Python 3.11). Guest used PyTorch 2.8.0 (Python 3.9).
+Unlike the TinyLlama Metal path, stock guest MPS already ran this MLP well;
+unlock closed the remaining gap to bare-metal MPS (and slightly beat it on this
+short run).
+
 ## Limits
 
 - Experimental. Relies on private, version-sensitive Metal guest details.
