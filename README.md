@@ -147,22 +147,23 @@ valid but CPU token generation is very slow in the guest.
 
 ## Example results (PyTorch MPS)
 
-Same Apple M3 Pro host and macOS 26.4.1 Anka guest. Workload:
-`bin/pytorch_infer_bench.py` — 8-layer MLP, batch 64, features 2048, hidden
-4096, 5 warmups + 20 timed reps.
+Same Apple M3 Pro host and macOS 26.4.1 Anka guest.
+`bin/pytorch_infer_bench.py` supports `mlp`, `gemm_fp16`, `gemm_bf16`, `conv`,
+and `attn`.
 
 ```bash
-python3 bin/pytorch_infer_bench.py --device cpu   # or mps
+python3 bin/pytorch_infer_bench.py --device mps --workload mlp
 ```
 
-Guest unlock with system Python needs the **arm64e** dylib (CLT `python3` is
-arm64e-capable at inject time even when `file` reports arm64 slices):
+Guest unlock with system Python needs the **arm64e** dylib:
 
 ```bash
 DYLD_INSERT_LIBRARIES=/path/to/libAnkaGpuFamilyBoost-arm64e.dylib \
 VEERTU_ANKA_GPU_APPLE_FAMILY_MAX=1009 \
-python3 bin/pytorch_infer_bench.py --device mps
+python3 bin/pytorch_infer_bench.py --device mps --workload mlp
 ```
+
+### One-shot five-scenario MLP (reference)
 
 | Scenario | Device | samples/s | mean ms/batch |
 | --- | --- | ---: | ---: |
@@ -172,10 +173,34 @@ python3 bin/pytorch_infer_bench.py --device mps
 | Anka guest MPS (default) | mps | 7194.56 | 8.90 |
 | Anka guest MPS (unlock) | mps | 8967.05 | 7.14 |
 
-Host used PyTorch 2.13.0 (Python 3.11). Guest used PyTorch 2.8.0 (Python 3.9).
-Unlike the TinyLlama Metal path, stock guest MPS already ran this MLP well;
-unlock closed the remaining gap to bare-metal MPS (and slightly beat it on this
-short run).
+Host: PyTorch 2.13.0 (Python 3.11). Guest: PyTorch 2.8.0 (Python 3.9).
+
+### Guest MPS default vs unlock (repeated runs)
+
+Stock guest MPS already runs these PyTorch paths well. Across repeated guest
+runs, unlock stayed within a few percent of default (noise), unlike llama-bench.
+
+MLP, 5 interleaved default/unlock runs:
+
+| Mode | samples/s mean | stdev |
+| --- | ---: | ---: |
+| Anka guest MPS (default) | 9423 | 75 |
+| Anka guest MPS (unlock) | 9481 | 160 |
+
+Unlock average: **+0.6%** vs default.
+
+Other workloads, 3 default + 3 unlock runs each (guest MPS):
+
+| Workload | Default mean | Unlock mean | Delta |
+| --- | ---: | ---: | ---: |
+| mlp | 9616 samples/s | 9341 | -2.9% |
+| gemm_fp16 | 269132 rows/s | 265858 | -1.2% |
+| gemm_bf16 | 245476 rows/s | 249548 | +1.7% |
+| conv | 531 images/s | 530 | -0.2% |
+| attn | 333259 tokens/s | 338908 | +1.7% |
+
+**Takeaway:** treat PyTorch MPS as roughly neutral for this unlock on the tested
+microbenchmarks. Use llama-bench (above) when you want a clear Metal-family win.
 
 ## Limits
 
