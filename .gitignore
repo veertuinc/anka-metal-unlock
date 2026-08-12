@@ -1,6 +1,8 @@
 out/
+bench-models/
 *.o
 *.dylib
+*.gguf
 .DS_Store
 *.swp
 *~

@@ -118,6 +118,40 @@ anka run \
 Do not advertise `MTLGPUFamilyMetal3` with this tool. Some frameworks use that
 answer to select residency paths that the paravirtual device may not support.
 
+## Example results (llama-bench)
+
+Same short command on an Apple M3 Pro host and a macOS 26.4.1 Anka guest.
+Model: `tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf`. Homebrew `llama.cpp` 10360.
+
+```bash
+llama-bench -m tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
+  -p 64 -n 32 -r 1 -t 8 -o json
+```
+
+### Bare metal (host)
+
+| Mode | ggml Metal family | pp64 (t/s) | tg32 (t/s) |
+| --- | --- | ---: | ---: |
+| CPU (`-ngl 0`) | Apple9 (1009) | 209.57 | 67.05 |
+| Metal (`-ngl -1`) | Apple9 (1009) | 1981.53 | 151.02 |
+
+### Anka guest (macOS 26.4.1)
+
+| Mode | ggml Metal family | pp64 (t/s) | tg32 (t/s) |
+| --- | --- | ---: | ---: |
+| CPU (`-ngl 0`) | Apple5 (1005) | 13.33 | 0.22 |
+| Anka default Metal (`-ngl -1`) | Apple5 (1005) | 9.26 | 0.14 |
+| Metal unlock (`-ngl -1` + inject) | Apple9 (1009) | 1921.75 | 139.59 |
+
+Guest unlock lands close to bare-metal Metal on this short TinyLlama run (prompt
+~1922 vs ~1982 t/s, gen ~140 vs ~151 t/s). Stock guest Metal stayed on Apple5
+with simdgroup reduction, simdgroup matrix multiply, and bfloat off. Unlock
+turned those on and reported Apple9.
+
+Numbers are from one short run on one host/guest pair. Re-run on your hardware
+before you treat them as a baseline. Longer runs (`-p 512 -n 128 -r 10`) are
+valid but CPU token generation is very slow in the guest.
+
 ## Limits
 
 - Experimental. Relies on private, version-sensitive Metal guest details.
