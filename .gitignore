@@ -1,0 +1,8 @@
+out/
+*.o
+*.dylib
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
